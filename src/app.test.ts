@@ -470,3 +470,48 @@ describe("session lifecycle", () => {
     expect(params["value"]).toBe("plan");
   });
 });
+
+
+describe("connection teardown", () => {
+  it("disposes the wrapped agent when the connection ends", async () => {
+    const { connectV2 } = await import("./app.js");
+    const { ndJsonStream } = await import("@agentclientprotocol/sdk/experimental/v2");
+
+    const disposed = vi.fn(async () => {});
+    const agent = new FakeAgent();
+    (agent as unknown as { dispose: () => Promise<void> }).dispose = disposed;
+
+    // The wrapped agent is constructed lazily, on the first handler call, so the connection
+    // has to actually carry one before there is anything to dispose.
+    let push!: (line: string) => void;
+    const input = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        push = (line) => controller.enqueue(new TextEncoder().encode(`${line}\n`));
+      },
+    });
+    const output = new WritableStream<Uint8Array>({ write: () => {} });
+    const connection = connectV2(ndJsonStream(output, input), {
+      logger: { log: () => {}, error: () => {}, warn: () => {} },
+      createAgent: () => agent,
+    });
+
+    push(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: 2, info: { name: "t", version: "1" } },
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(agent.calls.some((c) => c.method === "initialize")).toBe(true);
+    });
+
+    connection.close();
+    await vi.waitFor(() => {
+      // Without this, a client that disconnects leaves the Claude subprocesses behind every
+      // open session running.
+      expect(disposed).toHaveBeenCalledOnce();
+    });
+  });
+});

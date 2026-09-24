@@ -264,7 +264,32 @@ export function createV2App(options: AdapterOptions): AgentApp {
   return registerHandlers(agentApp({ name: "claude-agent-acp-v2" }), options);
 }
 
-/** Connect a configured app to a stream. */
+/**
+ * Connect a configured app to a stream, and release the wrapped agent when it ends.
+ *
+ * `ClaudeAcpAgent.dispose()` tears down the Claude subprocesses behind every open session. The
+ * handlers have no hook for connection teardown — the SDK surfaces it as a promise — so if
+ * nothing awaits it, a client that disconnects leaves those processes running. For a stdio
+ * binary the operating system usually cleans up after the exiting process anyway; for an
+ * embedded host that keeps running, it is a leak per connection.
+ */
 export function connectV2(stream: Stream, options: AdapterOptions): ReturnType<AgentApp["connect"]> {
-  return createV2App(options).connect(stream);
+  let disposeAgent: (() => Promise<void>) | undefined;
+  const app = createV2App({
+    ...options,
+    createAgent: (client, logger) => {
+      const agent = options.createAgent(client, logger);
+      disposeAgent = agent.dispose?.bind(agent);
+      return agent;
+    },
+  });
+
+  const connection = app.connect(stream);
+  void connection.closed
+    .catch(() => undefined)
+    .then(() => disposeAgent?.())
+    .catch((error: unknown) => {
+      (options.logger ?? console).error("disposing the wrapped agent failed", error);
+    });
+  return connection;
 }
