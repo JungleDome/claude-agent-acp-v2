@@ -181,7 +181,7 @@ export function toV2InitializeResponse(
 
   const session: V2SessionCapabilities = {};
   if (supported(v1.promptCapabilities)) {
-    session.prompt = marker<PromptCapabilities>(v1.promptCapabilities);
+    session.prompt = promptCapabilitiesToV2(v1.promptCapabilities);
   }
   if (supported(v1.mcpCapabilities)) {
     session.mcp = mcpCapabilitiesToV2(v1.mcpCapabilities);
@@ -230,14 +230,64 @@ export function toV2InitializeResponse(
 }
 
 /**
- * v1 `mcpCapabilities` minus the transport v2 deleted.
+ * Convert a v1 capability object's **boolean members** into v2 marker objects.
  *
- * v1 advertises `{ http: true, sse: true }`. v2 removed the `sse` transport entirely, so
- * carrying the flag through would advertise a transport no v2 client can ask for — and, worse,
- * would do it in the object-presence dialect where any value at the key reads as support.
+ * This is the object-presence rule applied one level down, and forgetting it is a silent
+ * failure rather than a loud one. v1 writes `promptCapabilities: { image: true }`; v2 declares
+ * `image` as `anyOf: [PromptImageCapabilities, null]`, so `true` is not merely unidiomatic, it
+ * is **invalid** — and the schema marks these fields `x-deserialize-default-on-error`, which
+ * instructs a client to fall back to "unsupported" rather than reject the message. Passing v1's
+ * booleans through therefore does not fail: it quietly turns every supported capability off.
+ *
+ * `false` is dropped rather than mapped to `{}`: in v2 the only way to say "not supported" is
+ * for the key to be absent or null.
+ *
+ * `keep` names the members that exist in the stable v2 schema. Anything else is dropped,
+ * because an unknown key in the object-presence dialect reads as an advertisement.
+ */
+function booleanMarkersToV2(
+  source: Record<string, unknown>,
+  keep: readonly string[],
+): Record<string, unknown> {
+  const v2: Record<string, unknown> = {};
+  for (const key of keep) {
+    const value = source[key];
+    if (value === true) v2[key] = {};
+    else if (value != null && typeof value === "object") v2[key] = { ...value };
+    // `false`, `null` and absent all mean the same thing in v2: leave the key out.
+  }
+  if (source["_meta"] != null) v2["_meta"] = source["_meta"];
+  return v2;
+}
+
+/** The members v2's `PromptCapabilities` defines. `audio` exists in both. */
+const V2_PROMPT_MARKERS = ["image", "audio", "embeddedContext"] as const;
+
+/** v1 `promptCapabilities`, with its booleans turned into v2 markers. */
+function promptCapabilitiesToV2(v1Prompt: unknown): PromptCapabilities {
+  return booleanMarkersToV2(
+    marker<Record<string, unknown>>(v1Prompt),
+    V2_PROMPT_MARKERS,
+  ) as PromptCapabilities;
+}
+
+/**
+ * v1 `mcpCapabilities`, as v2's two transports.
+ *
+ * Three separate changes meet here:
+ *
+ * - `sse` is **dropped**: v2 removed the transport, so advertising it would name something no
+ *   v2 client can ask for.
+ * - `acp` is **dropped**: MCP-over-ACP lives only in the draft superset (`mcp/*`).
+ * - `stdio` is **added**, and it is the one value here that is synthesised rather than carried.
+ *   v1 has no `stdio` flag because stdio is its default transport — `McpServerStdio` is the
+ *   untagged member of v1's `McpServer` union, which every v1 agent accepts. v2 promoted it to
+ *   an explicit marker, so omitting it would tell a v2 client that stdio MCP servers are
+ *   unsupported, and stdio is the commonest kind a user configures. The claim is true of the
+ *   wrapped agent: it accepts stdio servers on `session/new`.
  */
 function mcpCapabilitiesToV2(v1Mcp: unknown): McpCapabilities {
-  const source = marker<Record<string, unknown>>(v1Mcp);
-  delete source["sse"];
-  return source as McpCapabilities;
+  const v2 = booleanMarkersToV2(marker<Record<string, unknown>>(v1Mcp), ["http"]);
+  v2["stdio"] = {};
+  return v2 as McpCapabilities;
 }

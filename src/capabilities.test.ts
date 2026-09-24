@@ -20,6 +20,7 @@ import {
   type AdapterIdentity,
   type V1InitializeResponse,
 } from "./capabilities.js";
+import { validateInitializeResponse } from "./test-support/wire-schema.js";
 
 const evidencePath = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -63,9 +64,40 @@ describe("v1 initialize response -> v2", () => {
     });
   });
 
-  it("maps prompt and mcp capabilities into session", () => {
-    expect(v2.capabilities?.session?.prompt).toEqual({ image: true, embeddedContext: true });
-    expect(v2.capabilities?.session?.mcp).toBeDefined();
+  it("conforms to the stable schema", () => {
+    // The assertion that would have caught the boolean-marker bug on its first day. v2 marks
+    // these fields `x-deserialize-default-on-error`, so a client does not reject a boolean —
+    // it silently reads it as "unsupported". Only the schema can see the difference.
+    expect(validateInitializeResponse(v2)).toBeNull();
+  });
+
+  it("rejects a v1 boolean marker — positive control", () => {
+    const wrong = { ...v2, capabilities: { session: { prompt: { image: true } } } };
+    expect(validateInitializeResponse(wrong)).not.toBeNull();
+  });
+
+  it("turns v1's boolean prompt flags into v2 marker objects", () => {
+    // v1 says `{ image: true, embeddedContext: true }`; v2 says `{ image: {}, ... }`.
+    expect(v2.capabilities?.session?.prompt).toEqual({ image: {}, embeddedContext: {} });
+  });
+
+  it("drops a capability v1 reported as false", () => {
+    const partial = toV2InitializeResponse(
+      {
+        protocolVersion: 1,
+        agentCapabilities: { promptCapabilities: { image: true, audio: false } },
+      },
+      IDENTITY,
+    );
+    // In v2 the only way to say "not supported" is for the key to be absent.
+    expect(partial.capabilities?.session?.prompt).toEqual({ image: {} });
+  });
+
+  it("advertises stdio MCP, which v1 supports without a flag", () => {
+    // v1 has no `stdio` member: stdio is its default transport, the untagged branch of its
+    // McpServer union. v2 promoted it to an explicit marker, so silence would read as "no".
+    expect(v2.capabilities?.session?.mcp).toHaveProperty("stdio");
+    expect(v2.capabilities?.session?.mcp).toHaveProperty("http");
   });
 
   it("drops the sse transport v2 removed", () => {

@@ -64,6 +64,32 @@ export function definitionFor(method: string, side: "agent" | "client"): string 
   return match[0];
 }
 
+/**
+ * The definition for a method's **response**.
+ *
+ * Split from {@link definitionFor} because the schema annotates both halves of a method with
+ * the same `x-method`/`x-side` pair and distinguishes them only by name. Validating responses
+ * is not optional extra rigour: `initialize`'s response is where this adapter does its densest
+ * reshaping, and a capability emitted in v1's boolean dialect is *invalid* there while being
+ * marked `x-deserialize-default-on-error` — so a client silently reads it as "unsupported"
+ * instead of complaining. Nothing but schema validation can see that.
+ */
+export function responseDefinitionFor(method: string, side: "agent" | "client"): string {
+  const match = Object.entries(schema.$defs).find(
+    ([name, def]) =>
+      def["x-method"] === method && def["x-side"] === side && name.endsWith("Response"),
+  );
+  if (match === undefined) {
+    throw new Error(`no stable-v2 response definition for x-method=${method} x-side=${side}`);
+  }
+  return match[0];
+}
+
+/** An `initialize` response, as the agent sends it. */
+export function validateInitializeResponse(result: unknown): SchemaViolation | null {
+  return validateAgainst(responseDefinitionFor("initialize", "agent"), result);
+}
+
 function compiled(definition: string): ValidateFunction {
   const validator = ajv.getSchema(`acp#/$defs/${definition}`);
   if (validator === undefined) {
