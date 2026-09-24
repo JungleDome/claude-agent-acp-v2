@@ -77,12 +77,23 @@ export function toV1NewSession(params: Record<string, unknown>): Record<string, 
  * Getting this backwards is not a crash — it is a session that silently loses its history, or
  * one that duplicates every message a client already had.
  */
-export function toV1Resume(params: Record<string, unknown>): {
-  method: "loadSession" | "resumeSession";
-  params: Record<string, unknown>;
-} {
+export type ResumePlan =
+  | { readonly kind: "call"; readonly method: "loadSession" | "resumeSession"; readonly params: Record<string, unknown> }
+  | { readonly kind: "unsupported-cursor"; readonly replayFrom: unknown };
+
+export function toV1Resume(params: Record<string, unknown>): ResumePlan {
   const replayFrom = params["replayFrom"];
-  const wantsReplay = isRecord(replayFrom) && replayFrom["type"] === "start";
+
+  // v2's `ReplayFrom` union is open, and its `other` branch is explicit about what a receiver
+  // owes an unrecognised cursor: "reject the request rather than guessing where to replay
+  // from". Both guesses are genuinely harmful — resuming without replay reads to the client as
+  // "there was no history", and replaying everything when a suffix was asked for produces
+  // duplicates the client is not positioned to de-duplicate.
+  const cursorIsUnknown =
+    replayFrom != null && !(isRecord(replayFrom) && replayFrom["type"] === "start");
+  if (cursorIsUnknown) {
+    return { kind: "unsupported-cursor", replayFrom };
+  }
 
   const v1: Record<string, unknown> = {
     sessionId: params["sessionId"],
@@ -94,10 +105,9 @@ export function toV1Resume(params: Record<string, unknown>): {
   }
   if (params["_meta"] != null) v1["_meta"] = params["_meta"];
 
-  // An unrecognised `replayFrom` variant (v2's ReplayFrom union is open) is treated as "no
-  // replay" rather than as "replay from the start": resuming without history is recoverable by
-  // asking again, while replaying history a client did not ask for corrupts its transcript.
-  return { method: wantsReplay ? "loadSession" : "resumeSession", params: v1 };
+  // Omitted and `null` both mean "resume without replaying", which the schema states directly.
+  const wantsReplay = isRecord(replayFrom) && replayFrom["type"] === "start";
+  return { kind: "call", method: wantsReplay ? "loadSession" : "resumeSession", params: v1 };
 }
 
 /** v2 `session/set_config_option` -> v1. Delegates the awkward part to `config-options.ts`. */

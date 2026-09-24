@@ -348,6 +348,38 @@ describe("session/resume chooses between v1's two methods", () => {
     expect(harness.agent.calls.map((c) => c.method)).not.toContain("resumeSession");
   });
 
+  it("rejects an unknown cursor rather than guessing where to replay from", async () => {
+    // v2's ReplayFrom union is open and its `other` branch says receivers should "reject the
+    // request rather than guessing where to replay from". Both guesses corrupt something: no
+    // replay reads as "there was no history", full replay duplicates it.
+    const harness = await connect();
+    await harness.run((cx) =>
+      cx.request("initialize", { protocolVersion: 2, info: { name: "t", version: "1" } }),
+    );
+    await expect(
+      harness.run((cx) =>
+        cx.request("session/resume", {
+          sessionId: "old",
+          cwd: "/tmp",
+          replayFrom: { type: "_vendor_checkpoint", at: "abc" },
+        }),
+      ),
+    ).rejects.toThrow(/unsupported replayFrom cursor/);
+    expect(harness.agent.calls.map((c) => c.method)).not.toContain("loadSession");
+    expect(harness.agent.calls.map((c) => c.method)).not.toContain("resumeSession");
+  });
+
+  it("treats a null cursor as no replay, which the schema states directly", async () => {
+    const harness = await connect();
+    await harness.run((cx) =>
+      cx.request("initialize", { protocolVersion: 2, info: { name: "t", version: "1" } }),
+    );
+    await harness.run((cx) =>
+      cx.request("session/resume", { sessionId: "old", cwd: "/tmp", replayFrom: null }),
+    );
+    expect(harness.agent.calls.map((c) => c.method)).toContain("resumeSession");
+  });
+
   it("resumes without replay when no cursor is given", async () => {
     const harness = await connect();
     await harness.run((cx) =>

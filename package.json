@@ -1,7 +1,6 @@
 {
   "name": "claude-agent-acp-v2",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
@@ -20,6 +19,35 @@
     "build": "tsc",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.typecheck.json",
-    "check": "npm run typecheck && npm run test"
-  }
+    "check": "npm run typecheck && npm run test",
+    "prepublishOnly": "npm run check && npm run build"
+  },
+  "description": "Serve the Claude Agent over the Agent Client Protocol v2 (stable baseline), by wrapping @agentclientprotocol/claude-agent-acp.",
+  "license": "Apache-2.0",
+  "bin": {
+    "claude-agent-acp-v2": "dist/index.js"
+  },
+  "main": "dist/lib.js",
+  "types": "dist/lib.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "import": "./dist/lib.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "schema/",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "keywords": [
+    "acp",
+    "agent-client-protocol",
+    "claude",
+    "claude-code",
+    "acp-v2"
+  ]
 }

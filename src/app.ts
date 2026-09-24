@@ -173,8 +173,15 @@ export function registerHandlers(app: AgentApp, options: AdapterOptions): AgentA
 
     .onRequest("session/resume", async (ctx) => {
       const self = connectionFor(ctx.client);
-      const { method, params } = toV1Resume(ctx.params as never);
-      const v1 = await self.agent[method](params);
+      const plan = toV1Resume(ctx.params as never);
+      if (plan.kind === "unsupported-cursor") {
+        // The schema requires rejection rather than a guess; the raw cursor travels back in
+        // `data` so the client can see exactly what was not understood.
+        throw new RequestError(-32602, "unsupported replayFrom cursor", {
+          replayFrom: plan.replayFrom,
+        });
+      }
+      const v1 = await self.agent[plan.method](plan.params);
       self.adopt(String((ctx.params as Record<string, unknown>)["sessionId"]), v1);
       return lifecycleResponse(v1) as never;
     })
