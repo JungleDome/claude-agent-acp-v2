@@ -82,24 +82,33 @@ function rewriteSelectOptions(options: unknown): unknown {
 }
 
 /**
- * The v1 option id a v2 `configId` names.
+ * A v2 `session/set_config_option` request, as the wrapped v1 agent expects it.
  *
- * The values are identical — only the key changed — so this is a rename at the call site rather
- * than a transformation. It exists as a named function so the inbound direction
- * (`session/set_config_option`, where a v2 client sends `configId` and the wrapped v1 agent
- * expects `id`) has somewhere to point, instead of an unexplained property access.
+ * The rename above does **not** apply here, and assuming it did is the trap: v1 spells the key
+ * `id` on a `SessionConfigOption` but `configId` on a `SetSessionConfigOptionRequest`. Only the
+ * option *definition* was renamed in v2; the request carried `configId` in both versions.
+ *
+ * What does differ is the value. v2 tags it — `{ type: "id" | "boolean", value }` — while v1
+ * discriminates structurally: `{ type: "boolean", value: boolean }` or a bare
+ * `{ value: SessionConfigValueId }` with no `type` at all. Forwarding v2's `type: "id"` would
+ * hand v1 a discriminator it does not know.
  */
 export function toV1ConfigOptionRequest(params: {
   readonly sessionId: string;
   readonly configId: string;
+  readonly type?: string;
   readonly value: unknown;
   readonly _meta?: Record<string, unknown> | null;
 }): Record<string, unknown> {
   const v1: Record<string, unknown> = {
     sessionId: params.sessionId,
-    id: params.configId,
+    configId: params.configId,
     value: params.value,
   };
+  // v1 has exactly one tagged form. Everything else is the untagged select form, including a
+  // `type` from a future v2 variant this adapter does not recognise — dropping the tag is
+  // right there too, because v1 would reject a discriminator it has no branch for.
+  if (params.type === "boolean") v1["type"] = "boolean";
   if (params._meta != null) v1["_meta"] = params._meta;
   return v1;
 }
