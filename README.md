@@ -88,10 +88,21 @@ wrong fails validation outright — see [the schema trap](#the-schema-trap).
 
 **The client filesystem is gone, and it does not matter here.** v2 removed `fs/read_text_file`
 and `fs/write_text_file`. Measured against upstream 0.81.1, the wrapped agent never calls them:
-`clientCapabilities` is never consulted for `fs`, and the two forwarding methods have no
-internal callers, because Claude Code reaches files through its own tools. They are served
-locally anyway so a future upstream keeps working, and the bridge counts its calls so that
-premise stays observable instead of assumed.
+`clientCapabilities` is never consulted for `fs`, the two forwarding methods have no internal
+callers, and there is no ACP-backed filesystem MCP server — Claude Code reaches files through
+its own tools, gated by `session/request_permission`.
+
+They are still implemented, because `AcpClient` declares them non-optionally and a future
+upstream might start using them. The policy is asymmetric: **reads degrade, writes refuse.**
+A read through `node:fs` grants nothing the Claude subprocess does not already have, and its
+worst case is staleness. A write *does* grant new authority — it is the only path here that
+could change a user's files without a permission round trip — so it throws unless
+`allowUnnegotiatedDiskWrites` is set. Because neither path is reachable today, the refusal costs
+nothing and fails loudly the moment that stops being true.
+
+That premise is a measurement of one pinned version, so a test asserts the call-site count
+against the resolved package: an upstream bump that reintroduces an internal caller turns the
+suite red before it turns production silent.
 
 ## The schema trap
 

@@ -4,27 +4,39 @@
  * v2 removes `fs/read_text_file` and `fs/write_text_file` from the client surface outright; the
  * migration guide's advice is to supply an MCP server instead. That reads like a serious
  * problem for this adapter, because the `AcpClient` interface the wrapped v1 agent is
- * constructed with still has both methods on it, and in v1 they are how an editor-hosted agent
- * reads a buffer the user has edited but not saved.
+ * constructed with declares both methods **non-optionally**, so there is no way to construct
+ * `ClaudeAcpAgent` without supplying something.
  *
- * Measured against the wrapped agent at 0.81.1, it is not a problem at all:
+ * Measured against the wrapped agent at 0.81.1, the methods are unreachable:
  *
  * - `clientCapabilities` is never consulted for `fs` anywhere in the compiled agent.
- * - `ClaudeAcpAgent.readTextFile` / `.writeTextFile` exist as public methods that forward to
- *   the client, and **nothing inside the package calls them**.
+ * - `ClaudeAcpAgent.readTextFile` / `.writeTextFile` are one-line pass-throughs on the public
+ *   class surface, and **nothing inside the package calls them**.
+ * - There is no ACP-backed filesystem MCP server either. An earlier adapter generation exposed
+ *   `Read`/`Write`/`Edit` as MCP tools proxying to the client; 0.81.1 does not. File I/O for
+ *   the model happens inside the Claude Code subprocess against the real disk, gated by
+ *   `session/request_permission`.
  *
- * Claude Code reaches the filesystem through its own `Read`/`Write`/`Edit` tools in the Claude
- * Agent SDK, not through ACP. So the unsaved-buffer semantics v2 gives up were never in play on
- * this path, and no MCP filesystem server needs to be required of the client.
+ * So the unsaved-editor-buffer semantics v2 gives up were never in play on this path.
  *
- * That is a fact about a version, not a law, so this module still provides a real
- * implementation rather than a thrower: if a later upstream release starts routing file access
- * through the client, the adapter keeps working instead of failing at the worst moment. Backing
- * it with `node:fs` grants nothing new — the wrapped agent already has direct filesystem access
- * as the same process user, through the tools it actually uses.
+ * **Reads degrade; writes refuse.** The asymmetry is deliberate, and it is about authority
+ * rather than convenience:
  *
- * {@link FsBridge.servedCalls} exists so the premise above is observable rather than assumed:
- * a non-zero count means upstream changed, and the adapter can say so.
+ * - A read through `node:fs` grants nothing the Claude subprocess does not already have. The
+ *   worst case is staleness — the saved file rather than an unsaved buffer — and failing
+ *   instead would turn a degraded answer into an error.
+ * - A write through `node:fs` *does* grant new authority: it is the only path in this adapter
+ *   that could mutate a user's files without a `session/request_permission` round trip.
+ *   Refusing is recoverable; a silent unapproved write is not. Because the path is unreachable
+ *   in the pinned version, the refusal costs nothing today and guarantees we find out the
+ *   moment an upstream bump starts using it.
+ *
+ * `allowUnnegotiatedDiskWrites` exists so an operator who wants the old behaviour can have it
+ * deliberately, rather than by patching this file.
+ *
+ * All of the above rests on a measurement of one pinned version, which is why
+ * `fs-bridge.test.ts` asserts the call-site count against the resolved package: an npm bump
+ * that reintroduces an internal caller turns that test red before it turns production silent.
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -54,17 +66,43 @@ export interface FsBridge {
    * Expected to stay at zero for the lifetime of a connection. See the module comment.
    */
   readonly servedCalls: number;
+  /** Whether this bridge will perform a write, for the honest downward capability report. */
+  readonly writesEnabled: boolean;
 }
 
 /** Notified the first time the bridge is used, so a changed upstream is visible, once. */
 export type FsBridgeObserver = (method: "readTextFile" | "writeTextFile", path: string) => void;
 
+export interface FsBridgeOptions {
+  readonly observer?: FsBridgeObserver;
+  /**
+   * Permit writes straight to disk, bypassing any permission prompt.
+   *
+   * Off by default. See the module comment for why reads and writes are treated differently.
+   */
+  readonly allowUnnegotiatedDiskWrites?: boolean;
+}
+
+/** Thrown when the wrapped agent attempts a write this bridge will not perform. */
+export class UnnegotiatedWriteError extends Error {
+  constructor(path: string) {
+    super(
+      `refusing to write ${path}: ACP v2 has no client filesystem, so this write would ` +
+        `bypass the permission round trip that normally gates file changes. Set ` +
+        `allowUnnegotiatedDiskWrites to permit it deliberately.`,
+    );
+    this.name = "UnnegotiatedWriteError";
+  }
+}
+
 class NodeFsBridge implements FsBridge {
   #servedCalls = 0;
   readonly #observer: FsBridgeObserver;
+  readonly writesEnabled: boolean;
 
-  constructor(observer: FsBridgeObserver) {
-    this.#observer = observer;
+  constructor(options: FsBridgeOptions) {
+    this.#observer = options.observer ?? ((): void => {});
+    this.writesEnabled = options.allowUnnegotiatedDiskWrites ?? false;
   }
 
   get servedCalls(): number {
@@ -93,6 +131,9 @@ class NodeFsBridge implements FsBridge {
 
   async writeTextFile(params: WriteTextFileParams): Promise<Record<string, never>> {
     this.#record("writeTextFile", params.path);
+    if (!this.writesEnabled) {
+      throw new UnnegotiatedWriteError(params.path);
+    }
     // v1 clients create the parent directory as a matter of course; a bridge that did not would
     // turn a working write into an ENOENT the agent has no way to interpret.
     await mkdir(dirname(params.path), { recursive: true });
@@ -104,9 +145,9 @@ class NodeFsBridge implements FsBridge {
 /**
  * A bridge backed by the local filesystem.
  *
- * `observer` is called once, on first use, so the adapter can log that an assumption about the
- * wrapped agent no longer holds without emitting a line per file.
+ * `observer` is called once, on first use, so the adapter can report that an assumption about
+ * the wrapped agent no longer holds without emitting a line per file.
  */
-export function createNodeFsBridge(observer: FsBridgeObserver = () => {}): FsBridge {
-  return new NodeFsBridge(observer);
+export function createNodeFsBridge(options: FsBridgeOptions = {}): FsBridge {
+  return new NodeFsBridge(options);
 }

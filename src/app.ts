@@ -64,14 +64,18 @@ export interface AdapterOptions {
 /**
  * What this adapter tells the wrapped agent about client filesystem support.
  *
- * Both true, and truthfully so: v2 clients have no `fs/*` surface, but {@link createNodeFsBridge}
- * services those calls locally, so claiming support is a promise the adapter keeps rather than
- * one it delegates. See `fs-bridge.ts` for why it is never exercised in practice.
+ * Reported from the bridge rather than hard-coded, so the claim and the behaviour cannot drift:
+ * reads are always serviceable from `node:fs`, while writes are refused unless an operator
+ * opted in. Saying `writeTextFile: true` while the bridge would throw is the failure this
+ * function exists to prevent.
  */
-const FS_SUPPORT: FsSupport = { readTextFile: true, writeTextFile: true };
+function fsSupportOf(fs: FsBridge): FsSupport {
+  return { readTextFile: true, writeTextFile: fs.writesEnabled };
+}
 
 /** One connection's worth of state. */
 class Connection {
+  readonly fs: FsBridge;
   readonly shim: V2ClientShim;
   readonly turns: TurnTracker;
   readonly agent: WrappedAgent;
@@ -80,12 +84,16 @@ class Connection {
 
   constructor(ctx: AgentContext, options: AdapterOptions) {
     const logger = options.logger ?? console;
-    const fs = options.fs ?? createNodeFsBridge((method, path) =>
-      logger.warn?.(
-        `the wrapped agent called ${method} for ${path}; v2 has no client filesystem, ` +
-          `so it was served locally. This is unexpected for this upstream version.`,
-      ),
-    );
+    const fs =
+      options.fs ??
+      createNodeFsBridge({
+        observer: (method, path) =>
+          logger.warn?.(
+            `the wrapped agent called ${method} for ${path}; v2 has no client filesystem. ` +
+              `This is unexpected for the pinned upstream version — see fs-bridge.ts.`,
+          ),
+      });
+    this.fs = fs;
     this.shim = new V2ClientShim(ctx, fs, logger);
     this.turns = new TurnTracker(this.shim, (sessionId, error) =>
       logger.error(`turn failed for session ${sessionId}`, error),
@@ -156,7 +164,9 @@ export function registerHandlers(app: AgentApp, options: AdapterOptions): AgentA
   return app
     .onRequest("initialize", async (ctx) => {
       const self = connectionFor(ctx.client);
-      const v1 = await self.agent.initialize(toV1InitializeRequest(ctx.params, FS_SUPPORT));
+      const v1 = await self.agent.initialize(
+        toV1InitializeRequest(ctx.params, fsSupportOf(self.fs)),
+      );
       return toV2InitializeResponse(
         v1,
         options.identity ?? { name: "claude-agent-acp-v2", version: "0.0.0" },
