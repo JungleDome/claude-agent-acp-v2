@@ -26,6 +26,7 @@ import type {
 } from "@agentclientprotocol/sdk/experimental/v2";
 
 import { SessionUpdateMapper, type V1Update } from "./update-map.js";
+import { ensurePermissionOptions, sanitiseElicitationRequest } from "./sanitise.js";
 import type { FsBridge, ReadTextFileParams, WriteTextFileParams } from "./fs-bridge.js";
 import type { StateSink } from "./turn.js";
 import type { TurnTracker } from "./turn.js";
@@ -130,7 +131,8 @@ export class V2ClientShim implements StateSink {
       // its `cwd` required and the v1 request does not carry one — the session cwd is not the
       // command's, since a shell can change directory.
       subject: { type: "tool_call", toolCall },
-      options: params.options,
+      // v2 requires at least one option; v1 sets no lower bound.
+      options: ensurePermissionOptions(params.options),
     };
 
     const description = permissionDescription(params);
@@ -171,10 +173,16 @@ export class V2ClientShim implements StateSink {
     signal?: AbortSignal,
   ): Promise<unknown> {
     const sessionId = typeof params["sessionId"] === "string" ? params["sessionId"] : undefined;
+    // An MCP server's `requestedSchema` reaches this point unvalidated, and v2 added cardinality
+    // constraints v1 never had. Rewriting is better than letting the frame be rejected while a
+    // user waits to be asked something.
+    const sanitised = sanitiseElicitationRequest(params, (what) =>
+      this.#logger.warn?.(`elicitation schema rewritten for ACP v2: ${what}`),
+    );
     const send = (): Promise<unknown> =>
       this.#ctx.request(
         "elicitation/create",
-        params as never,
+        sanitised as never,
         signal !== undefined ? { cancellationSignal: signal } : undefined,
       );
     return sessionId === undefined ? send() : this.#awaitingClient(sessionId, send);

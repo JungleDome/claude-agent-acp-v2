@@ -11,7 +11,12 @@
 export { createV2App, connectV2, registerHandlers } from "./app.js";
 export type { AdapterOptions, AgentFactory, WrappedAgent } from "./app.js";
 
-export { V2ClientShim } from "./client-shim.js";
+export {
+  V2ClientShim,
+  normalisePermissionOutcome,
+  permissionDescription,
+  permissionTitle,
+} from "./client-shim.js";
 export type { Logger, V1RequestPermissionRequest, V1SessionNotification } from "./client-shim.js";
 
 export { TurnTracker, ERROR_STOP_REASON } from "./turn.js";
@@ -29,7 +34,9 @@ export type { ResumePlan } from "./inbound.js";
 export { toV1InitializeRequest, toV2InitializeResponse, supported } from "./capabilities.js";
 export type { AdapterIdentity, FsSupport, V1InitializeResponse } from "./capabilities.js";
 
-export { createNodeFsBridge } from "./fs-bridge.js";
+export { ensurePermissionOptions, sanitiseElicitationRequest } from "./sanitise.js";
+
+export { createNodeFsBridge, UnnegotiatedWriteError } from "./fs-bridge.js";
 export type { FsBridge, FsBridgeObserver } from "./fs-bridge.js";
 
 export {
