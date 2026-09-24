@@ -1,0 +1,291 @@
+{
+  "capturedUnder": {
+    "note": "The v1 initialize request the adapter actually sent. A v1 response is a function of these capabilities, so the responses below are evidence only of this input.",
+    "v2Request": {
+      "protocolVersion": 2,
+      "info": {
+        "name": "acp-v2-probe",
+        "version": "0.1.0"
+      },
+      "capabilities": {
+        "elicitation": {}
+      }
+    },
+    "v1Request": {
+      "protocolVersion": 1,
+      "clientCapabilities": {
+        "fs": {
+          "readTextFile": true,
+          "writeTextFile": false
+        },
+        "terminal": false,
+        "elicitation": {}
+      },
+      "clientInfo": {
+        "name": "acp-v2-probe",
+        "version": "0.1.0"
+      }
+    }
+  },
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "_meta": {
+        "claudeCode": {
+          "promptQueueing": true
+        },
+        "authStatus": {}
+      },
+      "promptCapabilities": {
+        "image": true,
+        "embeddedContext": true
+      },
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "auth": {
+        "logout": {}
+      },
+      "providers": {},
+      "loadSession": true,
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "subagents": {}
+      }
+    },
+    "agentInfo": {
+      "name": "@agentclientprotocol/claude-agent-acp",
+      "title": "Claude Agent",
+      "version": "0.81.1"
+    },
+    "authMethods": [],
+    "_meta": {
+      "jetbrains": {
+        "air": {
+          "version": 1,
+          "capabilities": [
+            "sessionFailure",
+            "agentFileChangeReport",
+            "nativeSubagentSessions",
+            "asyncTasks",
+            "recommendedValue"
+          ]
+        }
+      },
+      "steering": {
+        "supported": true
+      },
+      "goal": {
+        "version": 1,
+        "controlMethod": "_session/goal",
+        "actions": [
+          "set",
+          "clear"
+        ]
+      }
+    }
+  },
+  "newSession": {
+    "sessionId": "b34a939c-7a35-4388-81d2-f3610b5aec97",
+    "modes": {
+      "currentModeId": "default",
+      "availableModes": [
+        {
+          "id": "default",
+          "name": "Manual",
+          "description": "Always ask before making changes",
+          "_meta": {
+            "kind": "standard"
+          }
+        },
+        {
+          "id": "acceptEdits",
+          "name": "Accept edits",
+          "description": "Automatically accept all file edits",
+          "_meta": {
+            "kind": "standard"
+          }
+        },
+        {
+          "id": "plan",
+          "name": "Plan",
+          "description": "Create a plan before making changes",
+          "_meta": {
+            "kind": "plan"
+          }
+        },
+        {
+          "id": "auto",
+          "name": "Auto",
+          "description": "Claude handles permission decisions",
+          "_meta": {
+            "kind": "auto_review"
+          }
+        },
+        {
+          "id": "bypassPermissions",
+          "name": "Bypass permissions",
+          "description": "Accepts all permissions",
+          "_meta": {
+            "kind": "full_access"
+          }
+        }
+      ]
+    },
+    "configOptions": [
+      {
+        "id": "mode",
+        "name": "Mode",
+        "description": "Session permission mode",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "default",
+        "options": [
+          {
+            "value": "default",
+            "name": "Manual",
+            "description": "Always ask before making changes",
+            "_meta": {
+              "kind": "standard"
+            }
+          },
+          {
+            "value": "acceptEdits",
+            "name": "Accept edits",
+            "description": "Automatically accept all file edits",
+            "_meta": {
+              "kind": "standard"
+            }
+          },
+          {
+            "value": "plan",
+            "name": "Plan",
+            "description": "Create a plan before making changes",
+            "_meta": {
+              "kind": "plan"
+            }
+          },
+          {
+            "value": "auto",
+            "name": "Auto",
+            "description": "Claude handles permission decisions",
+            "_meta": {
+              "kind": "auto_review"
+            }
+          },
+          {
+            "value": "bypassPermissions",
+            "name": "Bypass permissions",
+            "description": "Accepts all permissions",
+            "_meta": {
+              "kind": "full_access"
+            }
+          }
+        ]
+      },
+      {
+        "id": "model",
+        "name": "Model",
+        "description": "AI model to use",
+        "category": "model",
+        "type": "select",
+        "currentValue": "sonnet",
+        "options": [
+          {
+            "value": "default",
+            "name": "Default (recommended)",
+            "description": "Opus (1M context)"
+          },
+          {
+            "value": "opus[1m]",
+            "name": "Opus 5.5",
+            "description": "Opus 5.5 with 1M context · Best for everyday, complex tasks"
+          },
+          {
+            "value": "claude-fable-5-1[1m]",
+            "name": "Fable 5.1",
+            "description": "Fable 5.1 · Most capable for your hardest and longest-running tasks"
+          },
+          {
+            "value": "sonnet",
+            "name": "Sonnet 5",
+            "description": "Sonnet 5 · Efficient for routine tasks"
+          },
+          {
+            "value": "haiku",
+            "name": "Haiku 4.5",
+            "description": "Haiku 4.5 · Fastest for quick answers"
+          }
+        ]
+      },
+      {
+        "id": "effort",
+        "name": "Effort",
+        "description": "Available effort levels for this model",
+        "category": "thought_level",
+        "type": "select",
+        "currentValue": "high",
+        "options": [
+          {
+            "value": "default",
+            "name": "Default"
+          },
+          {
+            "value": "low",
+            "name": "Low"
+          },
+          {
+            "value": "medium",
+            "name": "Medium"
+          },
+          {
+            "value": "high",
+            "name": "High"
+          },
+          {
+            "value": "xhigh",
+            "name": "Xhigh"
+          },
+          {
+            "value": "max",
+            "name": "Max"
+          }
+        ]
+      }
+    ]
+  },
+  "listSessionsShape": {
+    "note": "Shape only. Real session titles and working directories are deliberately not captured.",
+    "count": 33,
+    "entryShape": {
+      "sessionId": "string",
+      "cwd": "string",
+      "title": "string",
+      "updatedAt": "string"
+    }
+  },
+  "updatesDuringSetupShape": {
+    "note": "Shape only. Command names and descriptions are the operator's, not the protocol's.",
+    "variants": [
+      "available_commands_update"
+    ],
+    "shapes": [
+      {
+        "sessionUpdate": "string",
+        "availableCommands": [
+          {
+            "name": "string",
+            "description": "string",
+            "input": "object"
+          }
+        ]
+      }
+    ]
+  }
+}

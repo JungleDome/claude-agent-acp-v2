@@ -1,0 +1,25 @@
+{
+  "name": "claude-agent-acp-v2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.81.1",
+    "@agentclientprotocol/sdk": "1.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "ajv": "^8.20.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.typecheck.json",
+    "check": "npm run typecheck && npm run test"
+  }
+}
