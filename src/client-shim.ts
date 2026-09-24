@@ -123,23 +123,47 @@ export class V2ClientShim implements StateSink {
     const toolCall = params.toolCall ?? {};
     const request: Record<string, unknown> = {
       sessionId: params.sessionId,
-      title: permissionTitle(toolCall),
+      title: permissionTitle(params),
+      // Always sent, and always as a tool call. A client reads
+      // `subject.toolCall.toolCallId` to attach the approval to the tool-call it is about, so
+      // omitting the subject costs that linkage. The `command` subject is not used: v2 makes
+      // its `cwd` required and the v1 request does not carry one — the session cwd is not the
+      // command's, since a shell can change directory.
       subject: { type: "tool_call", toolCall },
       options: params.options,
     };
-    const description = toolCall["description"];
-    if (typeof description === "string" && description !== "") {
-      request["description"] = description;
-    }
+
+    const description = permissionDescription(params);
+    if (description !== undefined) request["description"] = description;
+    // Forwarded verbatim, which does mean `title` and `description` travel twice for a client
+    // that already understood `_meta.permission`. That is the lesser cost: `defaultToNo` has no
+    // v2 field at all and lives only here, and the schema's guidance for a proxy is to preserve
+    // raw payloads rather than edit them.
     if (params._meta != null) request["_meta"] = params._meta;
 
-    return this.#awaitingClient(params.sessionId, () =>
-      this.#ctx.request(
-        "session/request_permission",
-        request as never,
-        signal !== undefined ? { cancellationSignal: signal } : undefined,
-      ),
+    const offered = new Set(
+      params.options
+        .map((option) => (option as { optionId?: unknown })?.optionId)
+        .filter((id): id is string => typeof id === "string"),
     );
+
+    const outcome = await this.#awaitingClient(params.sessionId, () =>
+      this.#ctx
+        .request(
+          "session/request_permission",
+          request as never,
+          signal !== undefined ? { cancellationSignal: signal } : undefined,
+        )
+        .catch((error: unknown) => {
+          // -32800 is v2's "request cancelled". The wrapped agent understands a cancelled
+          // permission; it does not understand a transport error, and would fail the whole
+          // tool call over one.
+          if (isRequestCancelled(error)) return { outcome: { outcome: "cancelled" } };
+          throw error;
+        }),
+    );
+
+    return normalisePermissionOutcome(outcome, offered, this.#logger);
   }
 
   async createElicitation(
@@ -176,6 +200,14 @@ export class V2ClientShim implements StateSink {
    * without this adapter needing to know what any of them mean.
    */
   async extNotification(method: string, params: Record<string, unknown>): Promise<void> {
+    if (!method.startsWith("_")) {
+      // v2 reserves bare unknown method names for future ACP and `_`-prefixed ones for
+      // implementations. Emitting an unprefixed custom method would squat on ACP's namespace,
+      // and a name it later defines would collide with ours. Logged rather than thrown: an
+      // extension is not worth failing a turn over.
+      this.#logger.warn?.(`refusing to send unprefixed extension notification ${method}`);
+      return;
+    }
     try {
       await this.#ctx.notify(method as never, params as never);
     } catch (error) {
@@ -218,19 +250,98 @@ export class V2ClientShim implements StateSink {
   }
 }
 
-/**
- * A human-readable title for a permission dialog, from whatever v1 supplied.
- *
- * Preference order is what a user would want to read: the tool call's own title, then the tool
- * name, then a generic string. Returning an empty title would satisfy `tsc` and fail the
- * schema.
- */
-export function permissionTitle(toolCall: Record<string, unknown>): string {
-  const title = toolCall["title"];
-  if (typeof title === "string" && title.trim() !== "") return title;
+/** The `_meta.permission` block the wrapped agent attaches to a permission request. */
+function permissionMeta(params: V1RequestPermissionRequest): Record<string, unknown> | undefined {
+  const block = (params._meta as { permission?: unknown } | null | undefined)?.permission;
+  return typeof block === "object" && block !== null ? (block as Record<string, unknown>) : undefined;
+}
 
-  const name = toolCall["name"];
-  if (typeof name === "string" && name.trim() !== "") return name;
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+/**
+ * The title v2 requires on a permission request.
+ *
+ * The wrapped agent has already solved this problem for its own clients: it builds
+ * `_meta.permission = { version: 1, title, description?, defaultToNo? }`, where `title` is the
+ * heading it wants shown — including special cases like "Ready to code?" for `ExitPlanMode`.
+ * Promoting that is strictly better than re-deriving a title from the tool call, and it is why
+ * the ladder starts there rather than at `toolCall.title`.
+ *
+ * Never returns an empty string: v2 makes `title` required, and a client that takes it only
+ * when it is a non-empty string would otherwise render an unlabelled dialog asking a user to
+ * approve something anonymous.
+ */
+export function permissionTitle(params: V1RequestPermissionRequest): string {
+  const meta = permissionMeta(params);
+  const toolCall = params.toolCall ?? {};
+
+  const fromMeta = nonEmptyString(meta?.["title"]);
+  if (fromMeta !== undefined) return fromMeta;
+
+  const fromToolCall = nonEmptyString(toolCall["title"]);
+  if (fromToolCall !== undefined) return fromToolCall;
+
+  const name = nonEmptyString(toolCall["name"]);
+  if (name !== undefined) return `Use ${name}?`;
 
   return PERMISSION_FALLBACK_TITLE;
+}
+
+/**
+ * The optional `description`, taken only from where the wrapped agent actually puts one.
+ *
+ * Never synthesised. v2 reads an omitted description as "there is no separate description", and
+ * inventing one would be this adapter making a claim about *why* the agent wants permission
+ * that it has no basis for.
+ */
+export function permissionDescription(params: V1RequestPermissionRequest): string | undefined {
+  return nonEmptyString(permissionMeta(params)?.["description"]);
+}
+
+/** True for v2's "request cancelled" error code. */
+function isRequestCancelled(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === -32800;
+}
+
+/**
+ * A client's answer, reduced to something the wrapped agent can act on.
+ *
+ * Two v2 openings have to be closed here. `RequestPermissionOutcome` is an **open** union in v2
+ * and closed in v1, and a client may answer `selected` with an `optionId` that was never
+ * offered. Either would reach the wrapped agent's decoder, which throws "Permission option was
+ * not offered" out of `canUseTool` and fails the entire tool call with a message the user can do
+ * nothing about.
+ *
+ * Both degrade to `cancelled`, which the wrapped agent handles as a matter of course. The rule
+ * that must not be broken in the other direction: an unrecognised answer may never become
+ * `selected`. Turning "I do not understand this response" into "the user approved it" is the
+ * one mistake here with a real cost.
+ */
+export function normalisePermissionOutcome(
+  response: unknown,
+  offered: ReadonlySet<string>,
+  logger: Logger,
+): unknown {
+  const outcome = (response as { outcome?: { outcome?: unknown; optionId?: unknown } } | null)
+    ?.outcome;
+  if (outcome == null) return { outcome: { outcome: "cancelled" } };
+
+  if (outcome.outcome === "cancelled") return response;
+
+  if (outcome.outcome !== "selected") {
+    logger.warn?.(`unrecognised permission outcome ${String(outcome.outcome)}; treating as cancelled`);
+    return { outcome: { outcome: "cancelled" } };
+  }
+
+  if (typeof outcome.optionId !== "string" || !offered.has(outcome.optionId)) {
+    logger.error(
+      `client selected permission option ${String(outcome.optionId)}, which was not offered; ` +
+        `treating as cancelled`,
+    );
+    return { outcome: { outcome: "cancelled" } };
+  }
+
+  return response;
 }
