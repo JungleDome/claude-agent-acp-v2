@@ -244,6 +244,57 @@ describe("modes become config options", () => {
   });
 });
 
+describe("available command inputs", () => {
+  it("tags a v1 input, which v2 requires a discriminator on", () => {
+    const mapper = new SessionUpdateMapper(SESSION);
+    const [out] = mapConforming(mapper, {
+      sessionUpdate: "available_commands_update",
+      availableCommands: [{ name: "review", description: "Review code", input: { hint: "path" } }],
+    });
+    const commands = (out as { availableCommands: Array<Record<string, unknown>> })
+      .availableCommands;
+    expect(commands[0]?.["input"]).toEqual({ type: "text", hint: "path" });
+  });
+
+  it("drops an input that cannot be expressed, since v2 requires a hint", () => {
+    const mapper = new SessionUpdateMapper(SESSION);
+    const [out] = mapConforming(mapper, {
+      sessionUpdate: "available_commands_update",
+      availableCommands: [{ name: "go", description: "Go", input: {} }],
+    });
+    const commands = (out as { availableCommands: Array<Record<string, unknown>> })
+      .availableCommands;
+    // An absent input is valid and means "takes none" — a smaller lie than an invalid frame
+    // that costs the client the whole command list.
+    expect(commands[0]).not.toHaveProperty("input");
+    expect(commands[0]?.["name"]).toBe("go");
+  });
+
+  it("leaves a null input alone, which both versions accept", () => {
+    const mapper = new SessionUpdateMapper(SESSION);
+    const [out] = mapConforming(mapper, {
+      sessionUpdate: "available_commands_update",
+      availableCommands: [{ name: "go", description: "Go", input: null }],
+    });
+    const commands = (out as { availableCommands: Array<Record<string, unknown>> })
+      .availableCommands;
+    expect(commands[0]?.["input"]).toBeNull();
+  });
+
+  it("rejects the untagged v1 shape — positive control", () => {
+    // This is what forwarding unchanged would have sent, and it is the first notification the
+    // wrapped agent emits after a session opens.
+    expect(
+      validateSessionUpdate(
+        asNotification({
+          sessionUpdate: "available_commands_update",
+          availableCommands: [{ name: "c", description: "d", input: { hint: "x" } }],
+        }),
+      ),
+    ).not.toBeNull();
+  });
+});
+
 describe("config option renames", () => {
   it("renames id to configId, which v2 requires", () => {
     const mapper = new SessionUpdateMapper(SESSION);

@@ -119,6 +119,9 @@ export class SessionUpdateMapper {
       case "current_mode_update":
         return this.#modeChangeToConfigOption(update);
 
+      case "available_commands_update":
+        return [this.#retagCommandInputs(update)];
+
       case "config_option_update": {
         // Keep our record current, so a later `current_mode_update` reads the right choices.
         const options = update["configOptions"];
@@ -167,6 +170,46 @@ export class SessionUpdateMapper {
       this.#openMessages.set(variant, messageId);
     }
     return { ...update, messageId } as unknown as V2SessionUpdate;
+  }
+
+  /**
+   * Command inputs, given the discriminator v2 requires.
+   *
+   * v1's `AvailableCommandInput` is a single untagged branch, `{ hint? }`. v2 made it a tagged
+   * union whose only defined member is `{ type: "text", hint }` — and made `hint` **required**
+   * where v1 had it optional. So a v1 command carrying a hint is invalid v2 until it is tagged,
+   * and a v1 command with an `input` object but *no* hint cannot be expressed in v2 at all.
+   *
+   * The latter drops the `input` member rather than emitting a tagged input with no hint: an
+   * absent `input` is valid and means "this command takes none", which is a smaller lie than an
+   * invalid frame that costs the client the whole command list.
+   *
+   * This matters more than its size suggests — `available_commands_update` is the first
+   * notification the wrapped agent sends after a session opens.
+   */
+  #retagCommandInputs(update: V1Update): V2SessionUpdate {
+    const commands = update["availableCommands"];
+    if (!Array.isArray(commands)) return update as unknown as V2SessionUpdate;
+
+    const retagged = commands.map((command) => {
+      if (typeof command !== "object" || command === null) return command;
+      const record = command as Record<string, unknown>;
+      const input = record["input"];
+
+      // `null` and absent are both valid in v2 and both mean "no input".
+      if (input == null || typeof input !== "object") return command;
+
+      const inputRecord = input as Record<string, unknown>;
+      if (typeof inputRecord["type"] === "string") return command;
+
+      if (typeof inputRecord["hint"] !== "string") {
+        const { input: _dropped, ...rest } = record;
+        return rest;
+      }
+      return { ...record, input: { ...inputRecord, type: "text" } };
+    });
+
+    return { ...update, availableCommands: retagged } as unknown as V2SessionUpdate;
   }
 
   /**

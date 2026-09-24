@@ -61,6 +61,15 @@ export interface Logger {
  */
 const PERMISSION_FALLBACK_TITLE = "Permission required";
 
+/**
+ * How long an ask raised outside a turn may wait before this adapter answers it locally.
+ *
+ * Generous, because the cost of being wrong in one direction is asymmetric: too short and a
+ * user loses a dialog they were about to answer; too long and the wrapped agent is wedged. See
+ * `#askClient` for why a bound is needed at all.
+ */
+const DEFAULT_OUT_OF_TURN_TIMEOUT_MS = 120_000;
+
 export class V2ClientShim implements StateSink {
   readonly #ctx: AgentContext;
   readonly #fs: FsBridge;
@@ -68,11 +77,18 @@ export class V2ClientShim implements StateSink {
   readonly #mappers = new Map<string, SessionUpdateMapper>();
   /** Set late: the tracker needs the shim to construct, and the shim needs the tracker. */
   #turns: TurnTracker | undefined;
+  readonly #outOfTurnTimeoutMs: number;
 
-  constructor(ctx: AgentContext, fs: FsBridge, logger: Logger) {
+  constructor(
+    ctx: AgentContext,
+    fs: FsBridge,
+    logger: Logger,
+    outOfTurnTimeoutMs: number = DEFAULT_OUT_OF_TURN_TIMEOUT_MS,
+  ) {
     this.#ctx = ctx;
     this.#fs = fs;
     this.#logger = logger;
+    this.#outOfTurnTimeoutMs = outOfTurnTimeoutMs;
   }
 
   /** Completes the cycle between shim and tracker, once both exist. */
@@ -143,26 +159,32 @@ export class V2ClientShim implements StateSink {
     // raw payloads rather than edit them.
     if (params._meta != null) request["_meta"] = params._meta;
 
+    // Built from what is actually sent, not from what arrived: if a reject was synthesised
+    // above, a client selecting it must not then be normalised away as "never offered".
     const offered = new Set(
-      params.options
+      (request["options"] as readonly unknown[])
         .map((option) => (option as { optionId?: unknown })?.optionId)
         .filter((id): id is string => typeof id === "string"),
     );
 
-    const outcome = await this.#awaitingClient(params.sessionId, () =>
-      this.#ctx
-        .request(
-          "session/request_permission",
-          request as never,
-          signal !== undefined ? { cancellationSignal: signal } : undefined,
-        )
-        .catch((error: unknown) => {
-          // -32800 is v2's "request cancelled". The wrapped agent understands a cancelled
-          // permission; it does not understand a transport error, and would fail the whole
-          // tool call over one.
-          if (isRequestCancelled(error)) return { outcome: { outcome: "cancelled" } };
-          throw error;
-        }),
+    const outcome = await this.#askClient(
+      params.sessionId,
+      () =>
+        this.#ctx
+          .request(
+            "session/request_permission",
+            request as never,
+            signal !== undefined ? { cancellationSignal: signal } : undefined,
+          )
+          .catch((error: unknown) => {
+            // -32800 is v2's "request cancelled". The wrapped agent understands a cancelled
+            // permission; it does not understand a transport error, and would fail the whole
+            // tool call over one.
+            if (isRequestCancelled(error)) return { outcome: { outcome: "cancelled" } };
+            throw error;
+          }),
+      // An unanswered permission is a refused one. Never the reverse.
+      () => ({ outcome: { outcome: "cancelled" } }),
     );
 
     return normalisePermissionOutcome(outcome, offered, this.#logger);
@@ -185,7 +207,8 @@ export class V2ClientShim implements StateSink {
         sanitised as never,
         signal !== undefined ? { cancellationSignal: signal } : undefined,
       );
-    return sessionId === undefined ? send() : this.#awaitingClient(sessionId, send);
+    if (sessionId === undefined) return send();
+    return this.#askClient(sessionId, send, () => ({ outcome: { outcome: "cancel" } }));
   }
 
   async completeElicitation(params: Record<string, unknown>): Promise<void> {
@@ -255,6 +278,45 @@ export class V2ClientShim implements StateSink {
    */
   #awaitingClient<T>(sessionId: string, ask: () => Promise<T>): Promise<T> {
     return this.#turns === undefined ? ask() : this.#turns.whileAwaitingClient(sessionId, ask);
+  }
+
+  /**
+   * An ask, bounded when it is raised outside a turn.
+   *
+   * v2 lets background work continue while a session is `idle`, and a client is under no
+   * obligation to answer an ask that belongs to no turn. That is a reasonable protocol reading
+   * and it deadlocks in practice, on a path that is reached normally rather than exotically:
+   * `session/new`, `session/resume` and `session/load` all schedule MCP authentication on a
+   * `setTimeout(…, 0)` *after* they respond, and that raises a url-mode `elicitation/create`
+   * with no prompt in flight. A host that only attaches interactions to an open turn discards
+   * it, and the wrapped agent waits on its `await` forever — elicitations are not auto-answered
+   * on `session/cancel` and the wrapped agent does not race them locally.
+   *
+   * So an out-of-turn ask gets a deadline and a graceful answer. An in-turn ask keeps waiting as
+   * long as the turn does, which is what a user approving a tool call needs.
+   */
+  async #askClient<T>(sessionId: string, send: () => Promise<T>, onTimeout: () => T): Promise<T> {
+    const inTurn = this.#turns?.isRunning(sessionId) ?? false;
+    if (inTurn) return this.#awaitingClient(sessionId, send);
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<T>((resolve) => {
+      timer = setTimeout(() => {
+        this.#logger.warn?.(
+          `no answer to an out-of-turn client request for session ${sessionId} within ` +
+            `${this.#outOfTurnTimeoutMs}ms; answering it locally so the agent is not wedged`,
+        );
+        resolve(onTimeout());
+      }, this.#outOfTurnTimeoutMs);
+      // Do not hold the process open for a deadline that may never be reached.
+      timer.unref?.();
+    });
+
+    try {
+      return await Promise.race([this.#awaitingClient(sessionId, send), deadline]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 }
 

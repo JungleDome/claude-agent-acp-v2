@@ -11,12 +11,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  V2ClientShim,
   normalisePermissionOutcome,
   permissionDescription,
   permissionTitle,
   type Logger,
   type V1RequestPermissionRequest,
 } from "./client-shim.js";
+import { TurnTracker } from "./turn.js";
+import { createNodeFsBridge } from "./fs-bridge.js";
 import { validateAgainst } from "./test-support/wire-schema.js";
 
 const quiet: Logger = { log: () => {}, error: () => {}, warn: () => {} };
@@ -174,5 +177,79 @@ describe("the request we build conforms to the stable schema", () => {
         options: [{ optionId: "a", name: "A", kind: "allow_once" }],
       }),
     ).not.toBeNull();
+  });
+});
+
+
+describe("an ask raised outside a turn is bounded", () => {
+  /** A context whose requests never answer, like a client that ignores an out-of-turn ask. */
+  function silentContext(): { ctx: unknown; requests: number } {
+    const state = { requests: 0 };
+    const ctx = {
+      request: () => {
+        state.requests += 1;
+        return new Promise(() => {});
+      },
+      notify: async () => {},
+    };
+    return { ctx, get requests() { return state.requests; } };
+  }
+
+  it("answers a permission locally rather than wedging the agent", async () => {
+    // Reachable on the normal path: session/new schedules MCP authentication on a timer that
+    // fires *after* it responds, so the ask arrives with no prompt in flight. A host that only
+    // attaches interactions to an open turn discards it, and the wrapped agent's await never
+    // settles.
+    const { ctx } = silentContext();
+    const shim = new V2ClientShim(ctx as never, createNodeFsBridge(), quiet, 20);
+    shim.attachTurnTracker(new TurnTracker(shim));
+
+    const answer = await shim.requestPermission(request());
+    // An unanswered permission is a refused one. Never the reverse.
+    expect(answer).toEqual({ outcome: { outcome: "cancelled" } });
+  });
+
+  it("answers an elicitation locally too", async () => {
+    const { ctx } = silentContext();
+    const shim = new V2ClientShim(ctx as never, createNodeFsBridge(), quiet, 20);
+    shim.attachTurnTracker(new TurnTracker(shim));
+
+    await expect(shim.createElicitation({ sessionId: "s1", message: "who?" })).resolves.toEqual({
+      outcome: { outcome: "cancel" },
+    });
+  });
+
+  it("does not bound an ask inside a turn", async () => {
+    // A user deciding whether to approve a tool call gets as long as the turn does.
+    const { ctx } = silentContext();
+    const shim = new V2ClientShim(ctx as never, createNodeFsBridge(), quiet, 20);
+    const turns = new TurnTracker(shim);
+    shim.attachTurnTracker(turns);
+
+    let settled = false;
+    const turn = turns.run("s1", async () => {
+      await shim.requestPermission(request()).then(() => {
+        settled = true;
+      });
+      return { stopReason: "end_turn" };
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(settled).toBe(false);
+    void turn;
+  });
+
+  it("returns the client's real answer when one arrives in time", async () => {
+    const ctx = {
+      request: async () => ({ outcome: { outcome: "selected", optionId: "allow-once" } }),
+      notify: async () => {},
+    };
+    const shim = new V2ClientShim(ctx as never, createNodeFsBridge(), quiet, 20);
+    shim.attachTurnTracker(new TurnTracker(shim));
+
+    // The deadline must not be the only thing that can settle this.
+    await expect(shim.requestPermission(request())).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "allow-once" },
+    });
   });
 });
