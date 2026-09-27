@@ -63,17 +63,43 @@ const out = {
 
 out.initialize = await agent.initialize(v1Request);
 out.newSession = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+
+// `session/list` and the setup notifications are captured as SHAPE ONLY, never as content.
+//
+// Both carry real user data: `listSessions` returns every Claude session on the machine with
+// its title and working directory, and `available_commands_update` enumerates the operator's
+// installed commands. None of it is needed — the tests read `initialize` alone — and this file
+// is committed, so capturing it verbatim would put a list of someone's private projects into a
+// repository. Shape is the part that is evidence; content is the part that is a leak.
+const shapeOf = (value) => {
+  if (Array.isArray(value)) return value.length === 0 ? [] : [shapeOf(value[0])];
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, shapeOf(v)]));
+  }
+  return typeof value;
+};
+
 try {
-  out.listSessions = await agent.listSessions({});
+  const sessions = await agent.listSessions({});
+  out.listSessionsShape = {
+    note: "Shape only. Real session titles and working directories are deliberately not captured.",
+    count: Array.isArray(sessions?.sessions) ? sessions.sessions.length : 0,
+    entryShape: shapeOf(sessions?.sessions?.[0] ?? {}),
+  };
 } catch (error) {
-  out.listSessions = { error: error?.message };
+  out.listSessionsShape = { error: error?.message };
 }
-out.updatesDuringSetup = updates;
+
+out.updatesDuringSetupShape = {
+  note: "Shape only. Command names and descriptions are the operator's, not the protocol's.",
+  variants: updates.map((u) => u?.update?.sessionUpdate),
+  shapes: updates.map((u) => shapeOf(u?.update)),
+};
 
 writeFileSync("docs/mapping/EVIDENCE-v1-shapes.json", `${JSON.stringify(out, null, 2)}\n`);
 
 console.log("wrote docs/mapping/EVIDENCE-v1-shapes.json");
-console.log("  updates during setup:", updates.length);
+console.log("  updates during setup:", updates.length, "(shape only)");
 console.log("  config options:", out.newSession?.configOptions?.map((o) => `${o.id}:${o.type}`).join(", "));
 await agent.dispose?.();
 process.exit(0);
