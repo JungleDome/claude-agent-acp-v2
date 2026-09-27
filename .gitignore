@@ -1,3 +1,6 @@
 node_modules/
 dist/
 *.tsbuildinfo
+
+# The derivation specs live in the private host repo: they quote its internals.
+docs/mapping/*.md

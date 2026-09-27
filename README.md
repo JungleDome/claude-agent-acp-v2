@@ -145,10 +145,18 @@ npm run build
 The second typecheck pass covers tests and test-support, which the build excludes. Dropping it
 leaves those files unchecked with nothing going red.
 
-`docs/mapping/` holds the derivation this implementation was written from, including
-`EVIDENCE-v1-shapes.json` — the wrapped agent's real `initialize` and `session/new` responses,
-captured by `scripts/probe-v1-shapes.mjs` rather than hand-written, and used directly as test
-input.
+`docs/mapping/EVIDENCE-v1-shapes.json` is the wrapped agent's real `initialize` and
+`session/new` responses, captured by `scripts/probe-v1-shapes.mjs` rather than hand-written, and
+used directly as test input. It records the `clientCapabilities` it was captured under, because a
+v1 response is a function of them — a capture taken under different capabilities describes a
+client that does not exist. The probe deliberately records `session/list` and the setup
+notifications as **shape only**: their content is the operator's session titles, working
+directories and installed commands, none of which is evidence about the protocol.
+
+The longer derivation this implementation was written from — four independently derived mapping
+specifications and an adversarial reconciliation of them — is not in this repository. It quotes
+the internals of the private host it was developed against, so it lives there instead. Every
+decision it reached that affects this code is stated above or in the source comments.
 
 ## Licence
 
